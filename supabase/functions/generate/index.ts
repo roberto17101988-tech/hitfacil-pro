@@ -38,7 +38,7 @@ function jsonResponse(body: object, status = 200): Response {
   });
 }
 
-// Map voice selection to Suno-style tags
+// Map voice selection to vocal tags for the AI music API
 function voiceToTags(voice: string): string {
   switch (voice) {
     case "Masculina": return "male vocal";
