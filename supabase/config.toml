@@ -1,0 +1,11 @@
+[functions.generate]
+verify_jwt = false
+entrypoint = "./functions/generate/index.ts"
+
+[functions.pix]
+verify_jwt = false
+entrypoint = "./functions/pix/index.ts"
+
+[functions.webhook]
+verify_jwt = false
+entrypoint = "./functions/webhook/index.ts"
