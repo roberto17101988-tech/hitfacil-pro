@@ -23,13 +23,7 @@ interface GenerateResult {
   createdAt: string;
 }
 
-function getEnv(key: string): string | undefined {
-  try {
-    return Deno.env.get(key) ?? undefined;
-  } catch {
-    return process.env[key] ?? undefined;
-  }
-}
+const SUNO_BASE = "https://api.sunoapi.org";
 
 function jsonResponse(body: object, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -38,30 +32,49 @@ function jsonResponse(body: object, status = 200): Response {
   });
 }
 
-// Map voice selection to vocal tags for the AI music API
-function voiceToTags(voice: string): string {
+function voiceToGender(voice: string): "m" | "f" | undefined {
   switch (voice) {
-    case "Masculina": return "male vocal";
-    case "Feminina": return "female vocal";
-    case "Dueto": return "male and female duet vocals";
-    default: return "male and female duet vocals";
+    case "Masculina": return "m";
+    case "Feminina": return "f";
+    default: return undefined;
   }
 }
 
-// Map genre + mood to a description prompt for the AI music API
-function buildPrompt(data: GenerateRequest): string {
-  const parts: string[] = [];
-  const genreStr = data.genre || "pop";
-  const moodStr = data.mood || "uplifting";
-  const voiceStr = voiceToTags(data.voice || "Dueto");
-
-  parts.push(`${genreStr} ${moodStr} song with ${voiceStr}`);
-  if (data.title) parts.push(`titled "${data.title}"`);
-  return parts.join(", ");
+function buildStyle(genre: string, mood: string): string {
+  const parts = [genre, mood].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : "Pop";
 }
 
-async function pollForAudio(taskId: string, apiKey: string, maxAttempts = 60): Promise<string> {
-  const pollUrl = `https://api.musicapi.org/api/v1/sonic/fetch/${taskId}`;
+interface SunoTask {
+  taskId: string;
+}
+
+interface SunoRecordResponse {
+  code: number;
+  msg: string;
+  data: {
+    taskId: string;
+    status: string;
+    response?: {
+      sunoData?: Array<{
+        audioUrl?: string;
+        streamAudioUrl?: string;
+        duration?: number;
+        title?: string;
+      }>;
+    };
+    errorCode?: string | null;
+    errorMessage?: string | null;
+  };
+}
+
+async function pollForAudio(
+  taskId: string,
+  apiKey: string,
+  maxAttempts = 60,
+): Promise<{ audioUrl: string; duration: number }> {
+  const pollUrl = `${SUNO_BASE}/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`;
+
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     try {
@@ -70,17 +83,37 @@ async function pollForAudio(taskId: string, apiKey: string, maxAttempts = 60): P
         headers: { "Authorization": `Bearer ${apiKey}` },
       });
       if (!resp.ok) continue;
-      const data = await resp.json();
-      // Check for audio URL in common response shapes
-      const url = data.audio_url || data.data?.audio_url || data.data?.output?.audio_url || data.output?.audio_url;
-      const status = data.status || data.data?.status;
-      if (url) return url;
-      if (status === "failed" || status === "error") throw new Error("Generation failed");
-    } catch {
-      // keep polling
+      const data: SunoRecordResponse = await resp.json();
+
+      if (data.code !== 200) continue;
+
+      const status = data.data?.status;
+      if (status === "SUCCESS") {
+        const tracks = data.data?.response?.sunoData;
+        if (tracks && tracks.length > 0 && tracks[0].audioUrl) {
+          return {
+            audioUrl: tracks[0].audioUrl,
+            duration: tracks[0].duration || 30,
+          };
+        }
+      }
+
+      const failedStatuses = [
+        "CREATE_TASK_FAILED",
+        "GENERATE_AUDIO_FAILED",
+        "CALLBACK_EXCEPTION",
+        "SENSITIVE_WORD_ERROR",
+      ];
+      if (failedStatuses.includes(status || "")) {
+        throw new Error(data.data?.errorMessage || `Geração falhou: ${status}`);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("Geração falhou")) {
+        throw e;
+      }
     }
   }
-  throw new Error("Timeout waiting for audio generation");
+  throw new Error("Tempo esgotado aguardando a geração da música");
 }
 
 Deno.serve(async (req: Request) => {
@@ -91,40 +124,50 @@ Deno.serve(async (req: Request) => {
   try {
     const body = (await req.json()) as GenerateRequest;
 
-    // Read the MusicAPI key from environment — NEVER hardcode it
-    const apiKey = getEnv("MUSICAPI_KEY") || getEnv("VITE_MUSICAPI_KEY");
+    const apiKey = Deno.env.get("SUNO_API_KEY");
 
     if (!apiKey) {
       return jsonResponse(
-        { error: "MUSICAPI_KEY não configurado. Adicione a variável MUSICAPI_KEY nos secrets do Supabase." },
+        { error: "SUNO_API_KEY não configurado nos secrets do Supabase." },
         503,
       );
     }
 
-    const prompt = buildPrompt(body);
     const lyrics = body.lyrics || "";
-    const title = body.title || "Untitled Track";
+    const title = (body.title || "Untitled Track").slice(0, 80);
+    const genre = body.genre || "Pop";
+    const mood = body.mood || "Happy";
+    const style = buildStyle(genre, mood);
+    const vocalGender = voiceToGender(body.voice || "Dueto");
 
-    console.log(`Generate — prompt: ${prompt}, lyrics length: ${lyrics.length}`);
+    console.log(`Generate — style: ${style}, title: ${title}, voice: ${body.voice}, lyrics length: ${lyrics.length}`);
 
-    // Step 1: Create music generation task via musicapi.org
-    const createResponse = await fetch("https://api.musicapi.org/api/v1/sonic/create", {
+    const requestBody: Record<string, unknown> = {
+      customMode: true,
+      instrumental: false,
+      model: "V4_5ALL",
+      callBackUrl: `${Deno.env.get("SUPABASE_URL")}/functions/v1/webhook`,
+      prompt: lyrics.slice(0, 5000),
+      style: style.slice(0, 1000),
+      title,
+    };
+
+    if (vocalGender) {
+      requestBody.vocalGender = vocalGender;
+    }
+
+    const createResponse = await fetch(`${SUNO_BASE}/api/v1/generate`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        gpt_description_prompt: prompt,
-        lyrics: lyrics || undefined,
-        mv: "sonic-v3-5",
-        title: title,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!createResponse.ok) {
       const errorText = await createResponse.text();
-      console.error("MusicAPI create error:", errorText);
+      console.error("Suno create error:", errorText);
       return jsonResponse(
         { error: `Falha ao criar música (${createResponse.status})` },
         502,
@@ -132,38 +175,22 @@ Deno.serve(async (req: Request) => {
     }
 
     const createData = await createResponse.json();
-    const taskId = createData.task_id || createData.id || createData.data?.task_id || createData.data?.id;
+    const taskId: string | undefined = createData.data?.taskId;
 
     if (!taskId) {
-      // Some APIs return the audio URL directly
-      const directUrl = createData.audio_url || createData.data?.audio_url || createData.output?.audio_url;
-      if (directUrl) {
-        const result: GenerateResult = {
-          audioUrl: directUrl,
-          duration: 30,
-          title,
-          genre: body.genre || "Pop",
-          mood: body.mood || "Happy",
-          voice: body.voice || "Dueto",
-          lyrics,
-          createdAt: new Date().toISOString(),
-        };
-        return jsonResponse(result);
-      }
       return jsonResponse({ error: "Não foi possível iniciar a geração de música." }, 502);
     }
 
     console.log(`Task created: ${taskId}, polling for audio...`);
 
-    // Step 2: Poll for the completed audio
-    const audioUrl = await pollForAudio(taskId, apiKey);
+    const { audioUrl, duration } = await pollForAudio(taskId, apiKey);
 
     const result: GenerateResult = {
       audioUrl,
-      duration: 30,
+      duration,
       title,
-      genre: body.genre || "Pop",
-      mood: body.mood || "Happy",
+      genre,
+      mood,
       voice: body.voice || "Dueto",
       lyrics,
       createdAt: new Date().toISOString(),
