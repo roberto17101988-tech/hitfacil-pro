@@ -1,5 +1,5 @@
 export type Voice = 'Masculina' | 'Feminina' | 'Dueto';
-export type Genre = 'Pop' | 'Rap' | 'Rock' | 'EDM' | 'R&B' | 'Hip Hop' | 'Gospel' | 'Sertanejo Gospel' | 'Forró Gospel';
+export type Genre = 'Sertanejo' | 'Funk' | 'Pagodão' | 'Forró' | 'Gospel' | 'Trap' | 'MPB' | 'Piseiro';
 export type Mood = 'Happy' | 'Romantic' | 'Uplifting' | 'Chill' | 'Worship' | 'Adoração';
 export type Tab = 'description' | 'lyrics';
 export type Page = 'create' | 'explore' | 'cover' | 'library';
@@ -12,6 +12,7 @@ export interface CreatedTrack {
   voice: string;
   lyrics: string;
   audioUrl?: string;
+  coverUrl?: string;
   createdAt: string;
   duration: number;
 }
@@ -25,6 +26,7 @@ export interface PixPayment {
   amount: number;
   email: string;
   isPaid: boolean;
+  plan?: string;
 }
 
 export interface PaymentStatus {
@@ -35,6 +37,7 @@ export interface PaymentStatus {
 
 export interface GenerateResponse {
   audioUrl: string;
+  coverUrl?: string;
   duration: number;
   title: string;
   genre: string;
@@ -42,4 +45,18 @@ export interface GenerateResponse {
   voice: string;
   lyrics: string;
   createdAt: string;
+}
+
+export interface PublicTrack {
+  id: string;
+  title: string;
+  genre: string;
+  mood: string;
+  voice: string;
+  lyrics: string;
+  audio_url: string;
+  cover_url?: string;
+  duration: number;
+  plays: number;
+  created_at: string;
 }
